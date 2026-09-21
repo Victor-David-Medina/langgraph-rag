@@ -131,9 +131,9 @@ Honest limits of this example, stated plainly:
 
 ## Files
 
-- `run.py` — builds the index, runs the graph, prints trace + answer
-- `graph.py` — LangGraph state, nodes (retrieve/grade/rewrite/generate), edges
-- `corpus.py` — 7 short sample docs on AI infrastructure topics
-- `embeddings.py` — sentence-transformers wrapper plus a labeled hashed
+- `run.py`: builds the index, runs the graph, prints trace + answer
+- `graph.py`: LangGraph state, nodes (retrieve/grade/rewrite/generate), edges
+- `corpus.py`: 7 short sample docs on AI infrastructure topics
+- `embeddings.py`: sentence-transformers wrapper plus a labeled hashed
   bag-of-words fallback (used only if the real model cannot load)
-- `requirements.txt` — langgraph, qdrant-client, sentence-transformers, numpy
+- `requirements.txt`: langgraph, qdrant-client, sentence-transformers, numpy
