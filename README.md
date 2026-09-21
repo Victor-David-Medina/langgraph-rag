@@ -1,106 +1,139 @@
-# Skill-Proof MCP Server
+# LangGraph Retrieve-Grade-Generate RAG Loop
 
-A working Model Context Protocol server with three small tools. This is a
-**skills proof**, not a production deployment: it exists to show I can design,
-implement, and test a real MCP server end to end.
+A small, working skills-proof project: a LangGraph agent that answers questions
+from a 7-document local corpus using a **retrieve → grade → generate** loop,
+with **Qdrant in local mode** as the vector database.
 
-## Why MCP
+This is a portfolio example, not production. It runs fully offline with no API
+key: the `generate` node is extractive (it quotes the best sentences from the
+graded docs) so the loop can be demonstrated end to end without a model call.
+In a real deployment that node calls an LLM, which is exactly where LiteLLM
+slots in (see below).
 
-Before MCP, every AI host needed bespoke glue code to reach outside tools.
-MCP replaces that with one contract: a host and a server exchange JSON-RPC
-messages over a transport (stdio or HTTP+SSE), and the server advertises its
-capabilities (tools, resources, prompts) in a machine-readable schema.
+## How to run
 
-The mechanics, in short:
-
-```
-  +----------------+   JSON-RPC over stdio/HTTP   +----------------+
-  |  Host          |  --------------------------> |  Server        |
-  | (Claude Code,  |   initialize -> capabilities |  (this project)|
-  |  an agent,     |   tools/list                |  - advertises   |
-  |  a custom app) |   tools/call {name, args}   |  - executes     |
-  +----------------+  <-------------------------- |  - returns      |
-                          result payloads         +----------------+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python run.py
+# or ask your own question:
+.venv/bin/python run.py "What does a retrieval grader do?"
 ```
 
-Why I used it here: the value of MCP is *separation*. The host handles model
-reasoning and UI; the server owns tool execution, auth, and state. A server
-written once plugs into any compliant host without host-side changes. That
-decoupling is the whole point, and this project demonstrates it: the server
-below works with any MCP host via stdio, no custom integration code needed.
+Expected: the script indexes the corpus into `./qdrant_data/`, runs the graph,
+prints a node-by-node trace, then prints the final answer. The default sample
+question is chosen to match the corpus, so grading passes on the first pass.
+Try an unrelated question (e.g. `"How do I bake sourdough?"`) to watch the
+rewrite-and-retry cycle fire before the graph answers best-effort.
 
-## Why these three tools
+## Graph shape
 
-Each tool isolates one common pattern in AI tooling, and each is honest
-about its limits:
+```
+retrieve --> grade --(enough good docs)--> generate --> END
+                |
+                --(too few pass, retries left)--> rewrite --> retrieve
+```
 
-1. **`readability_analyze`** — Pure function, no I/O. Shows schema-first tool
-   design: typed JSON input, structured JSON output. Flesch Reading Ease and
-   Flesch-Kincaid grade use a heuristic syllable counter, which is good
-   enough for scoring prose but not for linguistics research.
+- **retrieve**: embeds the active query and pulls top-4 hits from Qdrant.
+- **grade**: re-scores each hit against the original question with cosine
+  similarity and keeps only hits above a threshold. Search score and grade are
+  separate on purpose: the index ranks candidates, the grader judges evidence.
+- **rewrite**: expands abbreviations (e.g. "RAG" → "retrieval augmented
+  generation") and retries retrieval. Bounded by `MAX_RETRIES = 2`, so the
+  graph always terminates.
+- **generate**: composes the answer from the graded docs only.
 
-2. **`fetch_url`** — Network I/O with clear boundaries. Only `http(s)`,
-   15s timeout, 1MB cap, HTML only. It strips scripts/styles and returns
-   title plus plain-text excerpt. It does *not* execute JavaScript; a page
-   that needs a browser would come back thin, and that tradeoff is stated
-   in the tool description the model sees.
+## Why LangGraph instead of plain sequential chaining
 
-3. **`notes_store`** — Persistent state with a single action-dispatched tool
-   (`save`/`get`/`list`/`delete`, JSON file on disk). MCP servers are
-   stateless by default, so state has to be an explicit design choice. Here
-   a flat file is the right call: the data is tiny, single-user, and needs
-   to survive restarts without a database.
+A plain chain is `search()` then `answer()`: two function calls in a row, with
+intermediate values trapped inside closures. That is fine until retrieval is
+bad, and then you rerun everything blind.
+
+LangGraph earns its place here in three specific ways:
+
+1. **Explicit state.** The question, retrieved docs, grades, retry count, and
+   trace all live in one `RAGState` object every node reads and writes. When
+   the answer is wrong, you can see exactly which node produced which value
+   instead of guessing.
+2. **Cycles with a termination guarantee.** The grade → rewrite → retrieve loop
+   is a real cycle in the graph, not a `while` loop bolted onto a chain. The
+   retry counter in state makes the bound visible and checkable.
+3. **Human-in-the-loop points.** Because state is explicit, you can pause
+   before `generate`, show a person the graded docs, and let them approve,
+   edit, or reject the evidence before any answer is composed. In a chain you
+   would have to restructure the code to add that checkpoint; in LangGraph it
+   is a node-level interrupt on state that already exists.
+
+## Why Qdrant
+
+- **Local mode needs nothing.** `QdrantClient(path=...)` embeds the storage
+  engine, so there is no Docker container, no server process, and no network
+  port. For a 7-document proof that is the difference between running and
+  yak-shaving.
+- **Same code scales up.** The client calls used here (`create_collection`,
+  `upsert`, `query_points`) work unchanged against a hosted Qdrant cluster, so
+  the example is not a throwaway API.
+- **Payloads ride with vectors.** Each point stores the doc id, title, and text
+  as payload, so retrieval returns usable context in one call instead of a
+  second lookup.
+
+Why not pgvector for this example: pgvector is the right call when you already
+run Postgres and want vectors next to relational data, but it would add a
+database server to a project that otherwise has zero infrastructure.
+
+## Where LiteLLM fits (now wired)
+
+David runs his own stack behind a LiteLLM proxy, so the model is never called
+directly. In this graph, LiteLLM slots into exactly one place: **the
+`generate` node, as the model-gateway layer**. This is now implemented, not
+just documented.
+
+The `generate()` node checks three environment variables:
+
+| Variable | Meaning | Example |
+|---|---|---|
+| `LITELLM_BASE_URL` | Proxy endpoint (required to use the gateway) | `http://hermes-rig:4000/v1` |
+| `LITELLM_API_KEY` | Proxy key (optional; many local proxies accept anything) | `sk-...` |
+| `LITELLM_MODEL` | Model name as configured in the proxy (default `gpt-4o-mini`) | `ollama/llama3.1` |
+
+Behavior:
+
+- **Gateway set and reachable:** graded docs are injected as context and a
+  real model writes the answer. Swapping providers is a proxy config change;
+  the agent code never notices.
+- **Gateway set but unreachable, or unset:** the node logs the failure and
+  falls back to the extractive answer, so the example still runs fully
+  offline with no API key.
+
+Nothing else in the graph changes: retrieval, grading, rewriting, and state
+all stay the same, because LiteLLM presents every provider (or a local Ollama
+model) behind one request shape.
+
+## What breaks at scale
+
+Honest limits of this example, stated plainly:
+
+- **The grader is cosine similarity, not judgment.** It measures vector
+  closeness, which correlates with relevance but can be fooled by a chunk that
+  uses the right words about the wrong thing. A real grader is a small model
+  call with a rubric.
+- **No chunking strategy.** Seven short docs fit in memory whole. Real corpora
+  need splitting, overlap, and metadata, and retrieval quality lives or dies
+  on those choices.
+- **Flat threshold, no calibration.** `GRADE_THRESHOLD = 0.30` was picked by
+  inspection on this corpus. Different embedding models and domains need
+  different thresholds, ideally tuned on labeled examples.
+- **Single-collection, single-tenant.** There is no namespacing, no access
+  control, and no handling of stale or contradictory documents.
+- **Extractive fallback.** Quoting sentences is honest for a demo but cannot
+  synthesize, compare, or admit uncertainty the way a model call can. That is
+  why the gateway path is preferred whenever `LITELLM_BASE_URL` is set.
 
 ## Files
 
-| File | What it is |
-|---|---|
-| `server.py` | The MCP server: tool implementations plus protocol wiring |
-| `test_server.py` | End-to-end test: real protocol round-trips, in-process |
-| `pyproject.toml` | Dependencies (`mcp>=1.9,<2`), Python >= 3.10 |
-| `data/notes.json` | Created at runtime by `notes_store` (gitignored in real use) |
-
-## How a host connects
-
-Stdio transport. Any MCP host (Claude Code, Claude Desktop, a custom agent)
-spawns the server as a subprocess and talks JSON-RPC over its stdin/stdout:
-
-```json
-{
-  "mcpServers": {
-    "skill-proof": {
-      "command": "/path/to/.venv/bin/python",
-      "args": ["/path/to/skill-proof/mcp-server/server.py"]
-    }
-  }
-}
-```
-
-No API keys, no network config, no services to run. The server announces its
-three tools on `initialize`; the host never needs code changes to use them.
-
-## Run it
-
-```bash
-cd skill-proof/mcp-server
-python3 -m venv .venv
-.venv/bin/pip install -e .
-.venv/bin/python test_server.py   # runs the full protocol test suite
-```
-
-## Testing approach
-
-`test_server.py` does not shortcut the protocol. It wires
-`server.run()` to a `ClientSession` through in-memory streams and performs
-real `initialize`, `tools/list`, and `tools/call` round-trips: the same
-messages a stdio host would send. Each tool is called with valid input,
-edge cases (empty text, non-HTTP URL, missing note key) are asserted to
-return structured errors rather than crash, and persistence is verified by
-checking the JSON file on disk between calls.
-
-## Known limits (deliberate)
-
-- Syllable counting is heuristic, not dictionary-based.
-- `fetch_url` cannot read JavaScript-rendered pages.
-- Notes are a flat JSON file: fine for one user, wrong for concurrent writers.
-- No authentication layer: appropriate for local stdio, not for a networked deployment.
+- `run.py` — builds the index, runs the graph, prints trace + answer
+- `graph.py` — LangGraph state, nodes (retrieve/grade/rewrite/generate), edges
+- `corpus.py` — 7 short sample docs on AI infrastructure topics
+- `embeddings.py` — sentence-transformers wrapper plus a labeled hashed
+  bag-of-words fallback (used only if the real model cannot load)
+- `requirements.txt` — langgraph, qdrant-client, sentence-transformers, numpy
