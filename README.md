@@ -73,7 +73,7 @@ LangGraph earns its place here in three specific ways:
 - **Same code scales up.** The client calls used here (`create_collection`,
   `upsert`, `query_points`) work unchanged against a hosted Qdrant cluster, so
   the example is not a throwaway API.
-- **Payloads ride with vectors.** Each point stores the doc id, title, and text
+- **Payloads ride with vectors.** Each point stores the doc id plus its title and full text
   as payload, so retrieval returns usable context in one call instead of a
   second lookup.
 
@@ -105,8 +105,7 @@ Behavior:
   falls back to the extractive answer, so the example still runs fully
   offline with no API key.
 
-Nothing else in the graph changes: retrieval, grading, rewriting, and state
-all stay the same, because LiteLLM presents every provider (or a local Ollama
+The rest of the graph stays the same, because LiteLLM presents every provider (or a local Ollama
 model) behind one request shape.
 
 ## What breaks at scale
@@ -118,7 +117,7 @@ Honest limits of this example, stated plainly:
   uses the right words about the wrong thing. A real grader is a small model
   call with a rubric.
 - **No chunking strategy.** Seven short docs fit in memory whole. Real corpora
-  need splitting, overlap, and metadata, and retrieval quality lives or dies
+  need a real chunking strategy, and retrieval quality lives or dies
   on those choices.
 - **Flat threshold, no calibration.** `GRADE_THRESHOLD = 0.30` was picked by
   inspection on this corpus. Different embedding models and domains need
@@ -137,3 +136,25 @@ Honest limits of this example, stated plainly:
 - `embeddings.py`: sentence-transformers wrapper plus a labeled hashed
   bag-of-words fallback (used only if the real model cannot load)
 - `requirements.txt`: langgraph, qdrant-client, sentence-transformers, numpy
+
+## Sample trace
+
+An off-corpus question, run with the offline hashed-bow fallback embedder (no model download). The grading node drops every hit below the similarity threshold, the rewrite loop retries twice, and the generator abstains instead of inventing an answer:
+
+```
+[retrieve] query='...' -> 4 hits: qdrant-local (0.274), mcp-basics (0.24), litellm-gateway (0.231), langgraph-state (0.182)
+[grade] qdrant-local: similarity=0.274 -> drop (threshold 0.3)
+[grade] mcp-basics: similarity=0.24 -> drop (threshold 0.3)
+[grade] litellm-gateway: similarity=0.231 -> drop (threshold 0.3)
+[grade] langgraph-state: similarity=0.182 -> drop (threshold 0.3)
+[rewrite] attempt 1: '...' -> '...'
+[retrieve] query='...' -> 4 hits
+[grade] ... -> drop (threshold 0.3)
+[rewrite] attempt 2: '...' -> '...'
+[generate] extractive fallback from 0 graded docs
+
+FINAL ANSWER
+I could not find relevant context in the corpus for this question.
+```
+
+Bounded retries, no silent failure, no invented answer.
