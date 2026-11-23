@@ -10,6 +10,15 @@ graded docs) so the loop can be demonstrated end to end without a model call.
 In a real deployment that node calls an LLM, which is exactly where LiteLLM
 slots in (see below).
 
+**Results:** 11 tests passing (`tests/test_graph.py`, including the
+termination bound) · full run transcripts committed at
+[`examples/sample-run.md`](examples/sample-run.md): the on-corpus question
+retrieves 4 docs, grades 1 above threshold, and answers from that doc; the
+off-corpus question grades 0, retries twice, and abstains · runs fully
+offline, no API key.
+
+**Status:** complete, maintained best-effort.
+
 ## How to run
 
 ```bash
@@ -22,9 +31,12 @@ python3 -m venv .venv
 
 Expected: the script indexes the corpus into `./qdrant_data/`, runs the graph,
 prints a node-by-node trace, then prints the final answer. The default sample
-question is chosen to match the corpus, so grading passes on the first pass.
-Try an unrelated question (e.g. `"How do I bake sourdough?"`) to watch the
-rewrite-and-retry cycle fire before the graph answers best-effort.
+question is chosen to match the corpus. In the measured run in
+`examples/sample-run.md`, 1 of the 4 retrieved docs clears the grading
+threshold, which is below the graph's minimum of 2, so the loop spends both
+rewrites and then answers from the single graded doc. Try an unrelated
+question (e.g. `"How do I bake sourdough?"`) to watch the same cycle end in
+an abstention instead: no relevant context, no invented answer.
 
 ## Graph shape
 
@@ -136,6 +148,10 @@ Honest limits of this example, stated plainly:
 - `embeddings.py`: sentence-transformers wrapper plus a labeled hashed
   bag-of-words fallback (used only if the real model cannot load)
 - `requirements.txt`: langgraph, qdrant-client, sentence-transformers, numpy
+- `tests/test_graph.py`: pytest suite over grading, query rewriting, and the
+  routing bound that guarantees termination
+- `examples/sample-run.md`: two full run transcripts (on-corpus and
+  off-corpus), captured with the real embedder
 
 ## Sample trace
 
@@ -158,3 +174,7 @@ I could not find relevant context in the corpus for this question.
 ```
 
 Bounded retries, no silent failure, no invented answer.
+
+Full transcripts of two runs with the real embedder (the default question
+and the sourdough question, with measured retrieve/grade counts) are
+committed at [`examples/sample-run.md`](examples/sample-run.md).
