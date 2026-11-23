@@ -31,9 +31,12 @@ python3 -m venv .venv
 
 Expected: the script indexes the corpus into `./qdrant_data/`, runs the graph,
 prints a node-by-node trace, then prints the final answer. The default sample
-question is chosen to match the corpus, so grading passes on the first pass.
-Try an unrelated question (e.g. `"How do I bake sourdough?"`) to watch the
-rewrite-and-retry cycle fire before the graph answers best-effort.
+question is chosen to match the corpus. In the measured run in
+`examples/sample-run.md`, 1 of the 4 retrieved docs clears the grading
+threshold, which is below the graph's minimum of 2, so the loop spends both
+rewrites and then answers from the single graded doc. Try an unrelated
+question (e.g. `"How do I bake sourdough?"`) to watch the same cycle end in
+an abstention instead: no relevant context, no invented answer.
 
 ## Graph shape
 
